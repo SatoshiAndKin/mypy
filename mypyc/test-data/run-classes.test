@@ -125,6 +125,44 @@ print(C.__annotations__["spam"] is JSONDecoder)
 [out]
 True
 
+[case testTypedDictQualifiedAnnotations]
+from typing import Sequence, TypedDict
+from typing_extensions import NotRequired as NR, ReadOnly, Required
+import typing_extensions as te
+
+class Payload(TypedDict):
+    items: NR[Sequence[int]]
+    nested: te.NotRequired[ReadOnly[int]]
+    optional_union: NR[int | None]
+    required: Required[int]
+    forward: NR["Later"]
+
+class Later:
+    pass
+
+class Partial(TypedDict, total=False):
+    value: Required[int]
+    extra: te.NotRequired[str]
+
+[file driver.py]
+from native import Payload, Partial
+from typing import Sequence, get_args, get_origin
+from typing_extensions import NotRequired, ReadOnly, Required
+
+assert get_origin(Payload.__annotations__["items"]) is NotRequired
+assert get_args(Payload.__annotations__["items"]) == (Sequence,)
+assert get_origin(Payload.__annotations__["nested"]) is NotRequired
+assert get_origin(get_args(Payload.__annotations__["nested"])[0]) is ReadOnly
+assert get_origin(Payload.__annotations__["optional_union"]) is NotRequired
+assert get_origin(Payload.__annotations__["forward"]) is NotRequired
+assert Payload.__required_keys__ == {"required"}
+assert Payload.__optional_keys__ == {"items", "nested", "optional_union", "forward"}
+assert Partial.__required_keys__ == {"value"}
+assert Partial.__optional_keys__ == {"extra"}
+assert get_origin(Partial.__annotations__["value"]) is Required
+[typing fixtures/typing-full.pyi]
+[out]
+
 [case testClassWithDeletableAttributes]
 from typing import Any, cast
 from testutil import assertRaises
