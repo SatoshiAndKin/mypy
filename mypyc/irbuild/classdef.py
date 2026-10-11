@@ -19,6 +19,7 @@ from mypy.nodes import (
     FuncDef,
     Lvalue,
     MemberExpr,
+    MypyFile,
     NameExpr,
     OverloadedFuncDef,
     PassStmt,
@@ -29,7 +30,7 @@ from mypy.nodes import (
     Var,
     is_class_var,
 )
-from mypy.types import Instance, UnboundType, get_proper_type
+from mypy.types import Instance, Type, UnboundType, get_proper_type
 from mypyc.common import GENERATOR_HELPER_NAME, MYPYC_DEFAULTS_SETUP, PROPSET_PREFIX
 from mypyc.ir.class_ir import ClassIR, NonExtClassInfo
 from mypyc.ir.func_ir import FuncDecl, FuncSignature
@@ -688,25 +689,49 @@ def add_non_ext_class_attr_ann(
                 typ = load_type(builder, type_info, stmt.unanalyzed_type, stmt.line)
 
     if typ is None:
-        # FIXME: if get_type_info is not provided, don't fall back to stmt.type?
-        ann_type = get_proper_type(stmt.type)
-        if (
-            isinstance(stmt.unanalyzed_type, UnboundType)
-            and stmt.unanalyzed_type.original_str_expr is not None
-        ):
-            # Annotation is a forward reference, so don't attempt to load the actual
-            # type and load the string instead.
-            #
-            # TODO: is it possible to determine whether a non-string annotation is
-            # actually a forward reference due to the __annotations__ future?
-            typ = builder.load_str(stmt.unanalyzed_type.original_str_expr)
-        elif isinstance(ann_type, Instance):
-            typ = load_type(builder, ann_type.type, stmt.unanalyzed_type, stmt.line)
-        else:
-            typ = builder.add(LoadAddress(type_object_op.type, type_object_op.src, stmt.line))
+        typ = load_non_ext_annotation(builder, stmt.type, stmt.unanalyzed_type, stmt.line)
 
     key = builder.load_str(lvalue.name)
     builder.call_c(exact_dict_set_item_op, [non_ext.anns, key, typ], stmt.line)
+
+
+def load_non_ext_annotation(
+    builder: IRBuilder, ann_type: Type | None, unbound: Type | None, line: int
+) -> Value:
+    if isinstance(unbound, UnboundType) and unbound.original_str_expr is not None:
+        return builder.load_str(unbound.original_str_expr)
+
+    if isinstance(unbound, UnboundType) and len(unbound.args) == 1:
+        # TypedDict semantic analysis strips qualifiers from stmt.type. Preserve
+        # them at runtime instead of loading the bare special form as a type.
+        tree = builder.graph[builder.current_module].tree
+        assert tree is not None
+        names = tree.names
+        parts = unbound.name.split(".")
+        symbol = names.get(parts[0])
+        for part in parts[1:]:
+            if symbol is None or not isinstance(symbol.node, (MypyFile, TypeInfo)):
+                symbol = None
+                break
+            symbol = symbol.node.names.get(part)
+        if symbol is not None and symbol.fullname in (
+            "typing.Required",
+            "typing.NotRequired",
+            "typing.ReadOnly",
+            "typing_extensions.Required",
+            "typing_extensions.NotRequired",
+            "typing_extensions.ReadOnly",
+        ):
+            qualifier = builder.load_global_str(parts[0], line)
+            for part in parts[1:]:
+                qualifier = builder.py_get_attr(qualifier, part, line)
+            inner = load_non_ext_annotation(builder, ann_type, unbound.args[0], line)
+            return builder.primitive_op(py_get_item_op, [qualifier, inner], line)
+
+    proper = get_proper_type(ann_type)
+    if isinstance(proper, Instance):
+        return load_type(builder, proper.type, unbound, line)
+    return builder.add(LoadAddress(type_object_op.type, type_object_op.src, line))
 
 
 def add_non_ext_class_attr(
