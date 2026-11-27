@@ -1,102 +1,138 @@
+---
 name: Run mypy_primer
-
-on:
-  # Only run on PR, since we diff against master
-  pull_request:
-    paths-ignore:
-    - 'docs/**'
-    - '**/*.rst'
-    - '**/*.md'
-    - 'misc/**'
-    - 'mypyc/**'
-    - 'mypy/stubtest.py'
-    - 'mypy/stubgen.py'
-    - 'mypy/stubgenc.py'
-    - 'mypy/test/**'
-    - 'test-data/**'
-
 permissions:
   contents: read
-
 concurrency:
   group: "${{ github.event_name == 'pull_request' && format('pr-ci-mypy_primer.yml-pull_request-{0}', github.event.number || github.run_id) || format('{0}-{1}', github.workflow, github.head_ref || github.run_id) }}"
   cancel-in-progress: true
-
 jobs:
+  ci_changes:
+    name: Select validation paths
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      run_validation: "${{ steps.paths.outputs.run_validation }}"
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - id: paths
+      env:
+        GH_TOKEN: "${{ github.token }}"
+        CI_INCLUDE_PATHS: "[]"
+        CI_IGNORE_PATHS: '["docs/**","**/*.rst","**/*.md","misc/**","mypyc/**","mypy/stubtest.py","mypy/stubgen.py","mypy/stubgenc.py","mypy/test/**","test-data/**"]'
+      run: python3 .github/scripts/ci_changes.py
   mypy_primer:
     name: Run mypy_primer
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        shard-index: [0, 1, 2, 3, 4, 5]
+        shard-index:
+        - 0
+        - 1
+        - 2
+        - 3
+        - 4
+        - 5
       fail-fast: false
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          path: mypy_to_test
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
-        with:
-          python-version: "3.14"
-      - name: Install dependencies
-        run: |
-          python -m pip install -U pip
-          pip install git+https://github.com/hauntsaninja/mypy_primer.git
-      - name: Run mypy_primer
-        shell: bash
-        run: |
-          cd mypy_to_test
-          echo "new commit"
-          git rev-list --format=%s --max-count=1 $GITHUB_SHA
+    - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      with:
+        path: mypy_to_test
+        fetch-depth: 0
+        persist-credentials: false
+    - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+      with:
+        python-version: '3.14'
+    - name: Install dependencies
+      run: |
+        python -m pip install -U pip
+        pip install git+https://github.com/hauntsaninja/mypy_primer.git
+    - name: Run mypy_primer
+      shell: bash
+      run: |
+        cd mypy_to_test
+        echo "new commit"
+        git rev-list --format=%s --max-count=1 $GITHUB_SHA
 
-          MERGE_BASE=$(git merge-base $GITHUB_SHA origin/$GITHUB_BASE_REF)
-          git checkout -b base_commit $MERGE_BASE
-          echo "base commit"
-          git rev-list --format=%s --max-count=1 base_commit
+        MERGE_BASE=$(git merge-base $GITHUB_SHA origin/$GITHUB_BASE_REF)
+        git checkout -b base_commit $MERGE_BASE
+        echo "base commit"
+        git rev-list --format=%s --max-count=1 base_commit
 
-          echo ''
-          cd ..
-          # fail action if exit code isn't zero or one
-          (
-            mypy_primer \
-            --repo mypy_to_test \
-            --new $GITHUB_SHA --old base_commit \
-            --num-shards 6 --shard-index ${{ matrix.shard-index }} \
-            --debug \
-            --additional-flags="--debug-serialize" \
-            --output concise \
-            --mypy-install-librt \
-            | tee diff_${{ matrix.shard-index }}.txt
-          ) || [ $? -eq 1 ]
-      - if: ${{ matrix.shard-index == 0 }}
-        name: Save PR number
-        run: |
-          echo ${{ github.event.pull_request.number }} | tee pr_number.txt
-      - name: Upload mypy_primer diff + PR number
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: ${{ matrix.shard-index == 0 }}
-        with:
-          name: mypy_primer_diffs-${{ matrix.shard-index }}
-          path: |
-            diff_${{ matrix.shard-index }}.txt
-            pr_number.txt
-      - name: Upload mypy_primer diff
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: ${{ matrix.shard-index != 0 }}
-        with:
-          name: mypy_primer_diffs-${{ matrix.shard-index }}
-          path: diff_${{ matrix.shard-index }}.txt
+        echo ''
+        cd ..
+        # fail action if exit code isn't zero or one
+        (
+          mypy_primer \
+          --repo mypy_to_test \
+          --new $GITHUB_SHA --old base_commit \
+          --num-shards 6 --shard-index ${{ matrix.shard-index }} \
+          --debug \
+          --additional-flags="--debug-serialize" \
+          --output concise \
+          --mypy-install-librt \
+          | tee diff_${{ matrix.shard-index }}.txt
+        ) || [ $? -eq 1 ]
+    - if: "${{ matrix.shard-index == 0 }}"
+      name: Save PR number
+      run: 'echo ${{ github.event.pull_request.number }} | tee pr_number.txt
 
+        '
+    - name: Upload mypy_primer diff + PR number
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: "${{ matrix.shard-index == 0 }}"
+      with:
+        name: mypy_primer_diffs-${{ matrix.shard-index }}
+        path: |
+          diff_${{ matrix.shard-index }}.txt
+          pr_number.txt
+    - name: Upload mypy_primer diff
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      if: "${{ matrix.shard-index != 0 }}"
+      with:
+        name: mypy_primer_diffs-${{ matrix.shard-index }}
+        path: diff_${{ matrix.shard-index }}.txt
+    needs:
+    - ci_changes
+    if: "${{ needs.ci_changes.outputs.run_validation == 'true' }}"
   join_artifacts:
     name: Join artifacts
     runs-on: ubuntu-latest
-    needs: [mypy_primer]
+    needs:
+    - mypy_primer
+    - ci_changes
     steps:
-      - name: Merge artifacts
-        uses: actions/upload-artifact/merge@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: mypy_primer_diffs
-          pattern: mypy_primer_diffs-*
-          delete-merged: true
+    - name: Merge artifacts
+      uses: actions/upload-artifact/merge@ea165f8d65b6e75b540449e92b4886f43607fa02
+      with:
+        name: mypy_primer_diffs
+        pattern: mypy_primer_diffs-*
+        delete-merged: true
+    if: "${{ needs.ci_changes.outputs.run_validation == 'true' }}"
+  ci_gate:
+    name: CI (mypy_primer.yml)
+    if: "${{ !cancelled() }}"
+    needs:
+    - ci_changes
+    - mypy_primer
+    - join_artifacts
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
+    - name: Verify validation contract
+      env:
+        CI_GATE_NEEDS: "${{ toJSON(needs) }}"
+        CI_EXPECTED_JOBS: '["mypy_primer","join_artifacts"]'
+      run: |-
+        python3 -m unittest discover -s .github/scripts -p test_ci_contract.py
+        python3 .github/scripts/ci_gate.py
+'on':
+  pull_request: {}
